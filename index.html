@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Мессенджер</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+        #messages { border: 1px solid #ddd; padding: 1rem; height: 300px; overflow-y: scroll; margin-bottom: 1rem; background: #fafafa; }
+        .message { margin-bottom: 0.5rem; padding: 0.5rem; background: white; border-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .message .author { font-weight: bold; color: #0366d6; }
+        .message .time { font-size: 0.8em; color: #666; margin-left: 0.5rem; }
+        #input-area { display: flex; gap: 0.5rem; }
+        #message-input { flex: 1; padding: 0.5rem; }
+        #send-btn { padding: 0.5rem 1rem; cursor: pointer; }
+        #status { margin-top: 0.5rem; font-size: 0.9em; color: #666; }
+    </style>
+</head>
+<body>
+    <h1>Мессенджер</h1>
+    <div id="messages"></div>
+    <div id="input-area">
+        <input type="text" id="message-input" placeholder="Введите сообщение..." />
+        <button id="send-btn">Отправить</button>
+    </div>
+    <div id="status"></div>
+
+    <script>
+        // =================================================================
+        // ВСТАВЬТЕ СЮДА ВАШ ТОКЕН GITHUB (FINE-GRAINED PAT)
+        // =================================================================
+        const GITHUB_TOKEN = "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"; 
+        
+        // Настройки репозитория (замените на свои)
+        const OWNER = "andreyvikodinov-ui";      // Например: "octocat"
+        const REPO = "TV";    // Например: "my-messenger"
+        const FILE_PATH = "letters.json";   // Имя файла для сообщений
+        const BRANCH = "main";              // Ветка (обычно main или master)
+
+        // =================================================================
+        // Дальше идёт логика приложения (менять не нужно)
+        // =================================================================
+        const API_URL = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${FILE_PATH}`;
+        
+        let currentFileSha = null; // Нужен для обновления файла
+
+        // Функция для кодирования в Base64 (с поддержкой UTF-8)
+        function toBase64(str) {
+            return btoa(unescape(encodeURIComponent(str)));
+        }
+
+        // Функция для декодирования из Base64 (с поддержкой UTF-8)
+        function fromBase64(base64) {
+            return decodeURIComponent(escape(atob(base64)));
+        }
+
+        // 1. Загрузка сообщений из GitHub
+        async function loadMessages() {
+            try {
+                const response = await fetch(`${API_URL}?ref=${BRANCH}`, {
+                    headers: { "Authorization": `token ${GITHUB_TOKEN}` }
+                });
+
+                if (response.status === 404) {
+                    // Файла ещё нет — это нормально, начинаем с пустого списка
+                    currentFileSha = null;
+                    renderMessages([]);
+                    return;
+                }
+
+                if (!response.ok) throw new Error(`Ошибка загрузки: ${response.status}`);
+
+                const data = await response.json();
+                currentFileSha = data.sha; // Сохраняем SHA для последующего обновления
+                
+                const content = fromBase64(data.content);
+                const messages = JSON.parse(content || "[]");
+                renderMessages(messages);
+            } catch (error) {
+                console.error("Ошибка при загрузке:", error);
+                setStatus("Не удалось загрузить сообщения. Проверьте консоль.");
+            }
+        }
+
+        // 2. Сохранение сообщений в GitHub
+        async function saveMessages(messages) {
+            try {
+                const contentBase64 = toBase64(JSON.stringify(messages, null, 2));
+                const body = {
+                    message: `Обновление чата: ${new Date().toISOString()}`,
+                    content: contentBase64,
+                    branch: BRANCH
+                };
+                // Если файл уже существует, нужно передать его SHA
+                if (currentFileSha) {
+                    body.sha = currentFileSha;
+                }
+
+                const response = await fetch(API_URL, {
+                    method: "PUT",
+                    headers: {
+                        "Authorization": `token ${GITHUB_TOKEN}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(body)
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.message || `Ошибка сохранения: ${response.status}`);
+                }
+
+                const result = await response.json();
+                // Обновляем SHA для следующего сохранения
+                if (result.content && result.content.sha) {
+                    currentFileSha = result.content.sha;
+                }
+                setStatus("Сообщение сохранено!");
+                // После сохранения перезагружаем, чтобы увидеть актуальный список
+                await loadMessages();
+            } catch (error) {
+                console.error("Ошибка при сохранении:", error);
+                setStatus("Ошибка сохранения: " + error.message);
+            }
+        }
+
+        // 3. Отправка нового сообщения
+        async function sendMessage() {
+            const input = document.getElementById("message-input");
+            const text = input.value.trim();
+            if (!text) return;
+
+            setStatus("Отправка...");
+            // Сначала загружаем актуальные сообщения (чтобы не потерять чужие)
+            await loadMessages();
+
+            // Получаем текущий список из DOM или заново из данных (проще — из данных, которые уже отрисованы)
+            // Но чтобы не усложнять, будем хранить текущие сообщения в глобальной переменной
+            // (см. renderMessages)
+            const currentMessages = window._currentMessages || [];
+            
+            const newMessage = {
+                id: Date.now(),
+                author: "Пользователь", // Можно добавить поле для имени
+                text: text,
+                timestamp: new Date().toISOString()
+            };
+
+            currentMessages.push(newMessage);
+            input.value = "";
+            await saveMessages(currentMessages);
+        }
+
+        // Вспомогательная функция для отрисовки и сохранения текущего состояния
+        function renderMessages(messages) {
+            window._currentMessages = messages; // Сохраняем в глобальной переменной для доступа
+            const container = document.getElementById("messages");
+            container.innerHTML = "";
+
+            if (messages.length === 0) {
+                container.innerHTML = "<p style='color:#999;'>Сообщений пока нет...</p>";
+                return;
+            }
+
+            messages.forEach(msg => {
+                const div = document.createElement("div");
+                div.className = "message";
+                const timeStr = new Date(msg.timestamp).toLocaleString();
+                div.innerHTML = `
+                    <span class="author">${msg.author || "Аноним"}</span>
+                    <span class="time">${timeStr}</span>
+                    <p>${msg.text}</p>
+                `;
+                container.appendChild(div);
+            });
+            // Прокрутка вниз
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function setStatus(text) {
+            document.getElementById("status").textContent = text;
+        }
+
+        // Инициализация
+        document.getElementById("send-btn").addEventListener("click", sendMessage);
+        document.getElementById("message-input").addEventListener("keypress", (e) => {
+            if (e.key === "Enter") sendMessage();
+        });
+
+        // Загружаем сообщения при старте
+        loadMessages();
+    </script>
+</body>
+</html>
